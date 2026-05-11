@@ -24,7 +24,7 @@ def _get_api_key() -> str:
 def _get_model(system_prompt: str = ""):
     import google.generativeai as genai
     genai.configure(api_key=_get_api_key())
-    kwargs = {"model_name": "gemini-2.5-flash-preview-04-17"}
+    kwargs = {"model_name": "gemini-2.5-flash"}
     if system_prompt:
         kwargs["system_instruction"] = system_prompt
     return genai.GenerativeModel(**kwargs)
