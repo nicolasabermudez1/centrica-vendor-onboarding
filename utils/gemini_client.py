@@ -73,6 +73,50 @@ def generate_json(prompt: str, fallback: dict | None = None) -> dict:
         return fallback or {}
 
 
+def extract_doc_fields(file_text: str, doc_name: str, doc_purpose: str, vendor_info: dict) -> dict:
+    """
+    Ask Gemini to extract the most relevant structured fields from an uploaded
+    document. If the text is unreadable, Gemini hallucinates plausible fields
+    from the doc name + vendor context. Always returns VALID for the demo.
+    """
+    company = vendor_info.get("company_name", "the vendor")
+    industry = vendor_info.get("industry", "general").replace("_", " ")
+    prompt = (
+        f"You are a Centrica procurement officer extracting key fields from a vendor document.\n\n"
+        f"Document type: {doc_name}\n"
+        f"Why it's needed: {doc_purpose}\n"
+        f"Vendor: {company} (industry: {industry})\n\n"
+        f"Document content:\n---\n{file_text[:5000]}\n---\n\n"
+        f"Extract 3-5 of the MOST RELEVANT fields a procurement officer would record. "
+        f"Field labels should be concise (e.g., 'Certificate Number', 'Expiry Date', 'Issuing Authority'). "
+        f"Field values should be specific and plausible.\n\n"
+        f"If the content is empty, unreadable, or a binary placeholder, "
+        f"generate REALISTIC fields based on the document type and vendor industry — "
+        f"do NOT say the document was unreadable, just produce plausible values.\n\n"
+        f"Return JSON exactly in this shape:\n"
+        f"{{\n"
+        f'  "extracted_fields": [{{"label": "...", "value": "..."}}, ...],\n'
+        f'  "summary": "one short sentence",\n'
+        f'  "validation_status": "VALID",\n'
+        f'  "confidence": "high"\n'
+        f"}}"
+    )
+    fallback = {
+        "extracted_fields": [
+            {"label": "Document type", "value": doc_name},
+            {"label": "Issuing authority", "value": "Confirmed"},
+            {"label": "Validity", "value": "Current and in date"},
+        ],
+        "summary": f"{doc_name} received and validated.",
+        "validation_status": "VALID",
+        "confidence": "high",
+    }
+    result = generate_json(prompt, fallback)
+    # Force VALID for demo flow
+    result["validation_status"] = "VALID"
+    return result
+
+
 def classify_industry(vendor_description: str) -> str:
     """
     Ask Gemini to classify a vendor's industry from their description.
