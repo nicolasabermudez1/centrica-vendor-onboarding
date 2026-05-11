@@ -687,16 +687,19 @@ def _render_agent_panel(placeholder=None):
             f'</div>'
         )
 
-    html = (
-        f'<div class="agent-panel">'
-        f'  {agent_grid_html}'
-        f'  {profile_section}'
-        f'  {news_section}'
-        f'  {flags_section}'
-        f'  {badge_html}'
-        f'  {ariba_html}'
-        f'</div>'
-    )
+    # Single-line concatenation, no leading whitespace anywhere — prevents
+    # Streamlit's CommonMark parser from interpreting any block as code.
+    parts = [
+        '<div class="agent-panel">',
+        agent_grid_html,
+        profile_section,
+        news_section,
+        flags_section,
+        badge_html,
+        ariba_html,
+        '</div>',
+    ]
+    html = "".join(p for p in parts if p).replace("\n", "")
 
     if placeholder:
         placeholder.markdown(html, unsafe_allow_html=True)
