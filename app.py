@@ -793,8 +793,8 @@ st.markdown(
     """
     <div class="aria-header">
       <div>
-        <h1>⚡ Centrica &nbsp;|&nbsp; Vendor Onboarding</h1>
-        <p class="tagline">Powered by ARIA · Automated Registration &amp; Intelligence Assistant</p>
+        <h1>⚡ Centrica &nbsp;|&nbsp; Supplier Lifecycle</h1>
+        <p class="tagline">Powered by ARIA · Pre-Qualification &amp; Vendor Registration</p>
       </div>
       <div style="color:#85DB9C;font-size:0.78rem;text-align:right;">
         Procurement Transformation<br/>
@@ -813,60 +813,294 @@ if not _api_key_ok():
     )
     st.stop()
 
-_render_phase_bar()
+# ── Tabs: Pre-Qualification (universal basics) → Vendor Registration ──────────
+tab_prequal, tab_reg = st.tabs(["🔍  Pre-Qualification", "📋  Vendor Registration"])
 
-# ── Two-column layout ──────────────────────────────────────────────────────────
-chat_col, panel_col = st.columns([2, 1], gap="large")
+with tab_prequal:
+    from prequal_tab import render_prequal_tab
+    render_prequal_tab()
 
-with panel_col:
-    _PANEL = st.empty()
-    _render_agent_panel(_PANEL)
+with tab_reg:
+    _render_phase_bar()
 
-with chat_col:
-    if not st.session_state.greeting_sent:
-        greeting = (
-            "Welcome to Centrica's supplier onboarding portal! 👋\n\n"
-            "I'm **ARIA** — Centrica's Automated Registration & Intelligence Assistant. "
-            "I'll guide you through onboarding today — it usually takes just a few minutes.\n\n"
-            "To get started, please tell me your **company name** and briefly describe "
-            "what you supply or what services you offer to Centrica."
+    # ── Two-column layout ──────────────────────────────────────────────────────
+    chat_col, panel_col = st.columns([2, 1], gap="large")
+
+    with panel_col:
+        _PANEL = st.empty()
+        _render_agent_panel(_PANEL)
+
+    with chat_col:
+        if not st.session_state.greeting_sent:
+            greeting = (
+                "Welcome to Centrica's supplier onboarding portal! 👋\n\n"
+                "I'm **ARIA** — Centrica's Automated Registration & Intelligence Assistant. "
+                "I'll guide you through onboarding today — it usually takes just a few minutes.\n\n"
+                "To get started, please tell me your **company name** and briefly describe "
+                "what you supply or what services you offer to Centrica."
+            )
+            st.session_state.messages.append({"role": "assistant", "content": greeting})
+            st.session_state.greeting_sent = True
+
+        chat_box = st.container(height=520, border=True)
+
+        with chat_box:
+            for msg in st.session_state.messages:
+                avatar = "⚡" if msg["role"] == "assistant" else "🏢"
+                with st.chat_message(msg["role"], avatar=avatar):
+                    st.markdown(msg["content"])
+
+            # Pending auto-turn (after agents / doc uploads)
+            if st.session_state.pending_auto_turn:
+                synthetic = st.session_state.pending_auto_turn
+                st.session_state.pending_auto_turn = None
+                _activity("🧠", "Generating ARIA response…", delay=0.2, kind="live")
+                with st.chat_message("assistant", avatar="⚡"):
+                    full = _stream_into_chat(synthetic_user_msg=synthetic)
+                _activity("💬", "ARIA response delivered", kind="ok")
+                clean, triggers = _process_response_triggers(full)
+                st.session_state.messages.append({"role": "assistant", "content": clean})
+
+                if triggers["validation"]:
+                    orc.advance_to_validation()
+                    _activity("🚦", "Phase advance: Documents → Validation", kind="ok")
+                if triggers["ariba"]:
+                    orc.phase = "ARIBA"
+                    _activity("🚦", "Phase advance: Validation → Ariba Submission", kind="ok")
+                    _render_phase_bar()
+                    with st.chat_message("assistant", avatar="⚡"):
+                        with st.status("Submitting to Ariba SLP…", expanded=True) as status:
+                            st.write("📦 Packaging validated vendor record…")
+                            run_ariba(_PANEL)
+                            st.write(f"✅ Registration complete — ref **{st.session_state.ariba_result['ariba_reference']}**")
+                            status.update(label="Ariba submission complete!", state="complete")
+
+                    ariba_ref = st.session_state.ariba_result["ariba_reference"]
+                    pt = st.session_state.ariba_result.get("payment_terms_days", "–")
+                    go_live = st.session_state.ariba_result.get("go_live_date", "–")
+                    completion_msg = (
+                        f"🎉 **Congratulations — registration is complete!**\n\n"
+                        f"Your vendor record has been submitted to **Centrica's Ariba SLP**.\n\n"
+                        f"- **Reference:** `{ariba_ref}`\n"
+                        f"- **Payment terms:** {pt} days from invoice date\n"
+                        f"- **Go-live date:** {go_live}\n\n"
+                        f"A **DocuSign onboarding pack** has been sent for your signature.\n\n"
+                        f"Is there anything else you'd like to know?"
+                    )
+                    st.session_state.messages.append({"role": "assistant", "content": completion_msg})
+                    orc.advance_to_complete()
+                    _activity("🎉", "Onboarding complete!", kind="ok")
+                    st.rerun()
+
+        # File uploader for current required doc
+        next_doc = None
+        if orc.phase == "PHASE_B":
+            next_doc = orc.get_next_required_doc()
+
+        if next_doc:
+            st.markdown(
+                f"<div style='font-size:0.8rem;color:#0F2067;margin-top:8px;'>"
+                f"<b>📎 Upload your {next_doc['name']}</b> "
+                f"<span style='color:#777;'>(or type a confirmation below — both work)</span></div>",
+                unsafe_allow_html=True,
+            )
+            uploaded = st.file_uploader(
+                label="Upload file",
+                type=None,
+                label_visibility="collapsed",
+                key=f"uploader_{st.session_state.upload_counter}_{next_doc['id']}",
+                help=next_doc.get("why", ""),
+            )
+            if uploaded is not None:
+                upload_key = f"{next_doc['id']}::{uploaded.name}::{uploaded.size}"
+                if upload_key not in st.session_state.processed_uploads:
+                    st.session_state.processed_uploads.add(upload_key)
+                    st.session_state.messages.append({
+                        "role": "user",
+                        "content": f"📎 *Uploaded:* `{uploaded.name}` for {next_doc['name']}",
+                    })
+                    with st.spinner(f"ARIA is reading `{uploaded.name}` and extracting the relevant information…"):
+                        extraction = _process_doc_upload(uploaded, next_doc)
+                    card = _format_extraction_card(uploaded.name, next_doc["name"], extraction)
+                    st.session_state.messages.append({"role": "assistant", "content": card})
+                    orc.confirm_doc(next_doc["id"])
+                    st.session_state.upload_counter += 1
+                    if orc.all_docs_confirmed():
+                        # All docs uploaded — DON'T jump to validation yet; bank form is next.
+                        st.session_state.pending_auto_turn = (
+                            "(System: vendor has now provided all required documents. "
+                            "Briefly acknowledge that and tell them ONE last step remains: "
+                            "providing their bank account details for payment setup, "
+                            "via the form that has just appeared below the chat. "
+                            "Do NOT include any [TRIGGER_*] markers.)"
+                        )
+                    else:
+                        nxt = orc.get_next_required_doc()
+                        if nxt:
+                            _activity("📋", f"Next document queued: {nxt['name']}")
+                        st.session_state.pending_auto_turn = (
+                            f"(System: vendor just successfully provided their {next_doc['name']}. "
+                            f"Thank them briefly and request the NEXT required document.)"
+                        )
+                    st.rerun()
+
+        # ── Bank-details form (appears after all docs uploaded, before validation) ─
+        show_bank_form = (
+            orc.phase == "PHASE_B"
+            and orc.all_docs_confirmed()
+            and not st.session_state.bank_submitted
         )
-        st.session_state.messages.append({"role": "assistant", "content": greeting})
-        st.session_state.greeting_sent = True
+        if show_bank_form:
+            st.markdown(
+                "<div style='font-size:0.85rem;color:#0F2067;margin-top:10px;'>"
+                "<b>🏦 One last step — your bank account details</b> "
+                "<span style='color:#777;'>(required by Centrica AP for setting up payments)</span></div>",
+                unsafe_allow_html=True,
+            )
+            with st.form("bank_form", clear_on_submit=False):
+                bcol1, bcol2 = st.columns(2)
+                with bcol1:
+                    bank_holder = st.text_input("Account holder name *", placeholder="Exactly as on your bank statement")
+                    bank_name = st.text_input("Bank name *", placeholder="e.g. Barclays Bank UK PLC")
+                    sort_code = st.text_input("Sort code *", placeholder="12-34-56", max_chars=8)
+                with bcol2:
+                    account_number = st.text_input("Account number *", placeholder="12345678", max_chars=10)
+                    iban = st.text_input("IBAN (optional)", placeholder="GB29 NWBK 6016 1331 9268 19")
+                    currency = st.selectbox("Currency *", ["GBP", "EUR", "USD"], index=0)
+                submitted = st.form_submit_button("✅ Confirm bank details", type="primary", use_container_width=True)
 
-    chat_box = st.container(height=520, border=True)
+            if submitted:
+                missing = [n for n, v in [
+                    ("Account holder", bank_holder), ("Bank name", bank_name),
+                    ("Sort code", sort_code), ("Account number", account_number),
+                ] if not v.strip()]
+                if missing:
+                    st.error(f"Please complete: {', '.join(missing)}")
+                else:
+                    masked_acc = "****" + account_number[-4:] if len(account_number) >= 4 else "****"
+                    orc.update_vendor_info("bank", {
+                        "holder": bank_holder.strip(),
+                        "bank_name": bank_name.strip(),
+                        "sort_code": sort_code.strip(),
+                        "account_number": masked_acc,
+                        "iban": iban.strip(),
+                        "currency": currency,
+                    })
+                    # Raise a flag — if holder name differs from registered company name, yellow flag
+                    company_lower = orc.vendor_info.get("company_name", "").lower()
+                    holder_lower = bank_holder.lower().strip()
+                    if company_lower and holder_lower and \
+                       holder_lower not in company_lower and company_lower not in holder_lower:
+                        _add_flag("yellow", "Bank Account Validation",
+                                  f"Holder '{bank_holder}' has minor variation from registered entity '{orc.vendor_info.get('company_name')}' — flag for manual review")
+                    else:
+                        _add_flag("green", "Bank Account Validation",
+                                  f"Holder name matches registered entity")
+                    _add_flag("green", "Sanctions Bank Match", f"Bank '{bank_name}' on approved counterparty list")
 
-    with chat_box:
-        for msg in st.session_state.messages:
-            avatar = "⚡" if msg["role"] == "assistant" else "🏢"
-            with st.chat_message(msg["role"], avatar=avatar):
-                st.markdown(msg["content"])
+                    # Confirmation message in chat
+                    st.session_state.messages.append({
+                        "role": "user",
+                        "content": (
+                            f"🏦 *Bank details submitted:* {bank_name} · "
+                            f"{bank_holder} · ****{account_number[-4:] if len(account_number) >= 4 else '****'} · "
+                            f"{currency}"
+                        ),
+                    })
+                    st.session_state.bank_submitted = True
+                    orc.advance_to_validation()
+                    st.session_state.pending_auto_turn = (
+                        "(System: vendor has now provided their bank details and all required documents. "
+                        "Please perform the final validation summary, mention exactly ONE minor flag "
+                        "(the bank account holder name has a minor variation from the registered entity name — "
+                        "flag it for manual review but recommend proceeding), then submit to Ariba. "
+                        "Include [TRIGGER_ARIBA] on its own line at the end.)"
+                    )
+                    st.rerun()
 
-        # Pending auto-turn (after agents / doc uploads)
-        if st.session_state.pending_auto_turn:
-            synthetic = st.session_state.pending_auto_turn
-            st.session_state.pending_auto_turn = None
-            _activity("🧠", "Generating ARIA response…", delay=0.2, kind="live")
-            with st.chat_message("assistant", avatar="⚡"):
-                full = _stream_into_chat(synthetic_user_msg=synthetic)
-            _activity("💬", "ARIA response delivered", kind="ok")
+        if orc.phase != "COMPLETE":
+            user_input = st.chat_input("Type your message…")
+        else:
+            user_input = None
+            st.success("✅ Onboarding complete! Refresh the page to onboard another vendor.")
+
+        if user_input:
+            st.session_state.messages.append({"role": "user", "content": user_input})
+            _extract_vendor_info(user_input, role="user")
+            if orc.phase in ("WELCOME", "PHASE_A"):
+                _detect_industry_from_messages()
+
+            # ── Pre-qual Ariba lookup branch ────────────────────────────────────
+            # After the first vendor message that lets us classify the industry,
+            # skip the Phase A questions and pull the existing pre-qual record
+            # from Ariba, then immediately run background checks.
+            if (
+                orc.vendor_info.get("industry")
+                and not st.session_state.prequal_done
+                and orc.vendor_info.get("company_name")
+            ):
+                with chat_box:
+                    with st.chat_message("user", avatar="🏢"):
+                        st.markdown(user_input)
+                run_prequal_lookup(chat_box)
+                run_agents(_PANEL)
+                st.session_state.pending_auto_turn = (
+                    "(System: all background checks have just completed successfully. "
+                    "Briefly summarise the positive results in one short paragraph "
+                    "and ask the vendor for the FIRST required industry-specific document. "
+                    "Do NOT include any [TRIGGER_*] markers.)"
+                )
+                st.rerun()
+
+            # ── Normal Gemini response path ──────────────────────────────────────
+            with chat_box:
+                with st.chat_message("user", avatar="🏢"):
+                    st.markdown(user_input)
+                with st.chat_message("assistant", avatar="⚡"):
+                    full = _stream_into_chat()
+
             clean, triggers = _process_response_triggers(full)
+
+            if orc.phase == "PHASE_B" and next_doc:
+                positive = ["yes", "confirm", "have it", "here", "provided", "attached", "sent", "done", "sure", "ok", "✓", "ref"]
+                if any(w in user_input.lower() for w in positive):
+                    orc.confirm_doc(next_doc["id"])
+                    if orc.all_docs_confirmed():
+                        # Don't advance to validation — bank form is next
+                        st.session_state.pending_auto_turn = (
+                            "(System: vendor has now provided all required documents. "
+                            "Briefly acknowledge and tell them ONE last step remains: "
+                            "the bank-details form that has appeared below the chat. "
+                            "Do NOT include any [TRIGGER_*] markers.)"
+                        )
+
             st.session_state.messages.append({"role": "assistant", "content": clean})
+
+            if triggers["agents"] and not st.session_state.agents_triggered:
+                orc.phase = "AGENTS_RUNNING"
+                run_agents(_PANEL)
+                st.session_state.pending_auto_turn = (
+                    "(System: all background checks have just completed successfully. "
+                    "Now briefly summarise the positive results in one short paragraph "
+                    "and ask the vendor for the FIRST required industry-specific document.)"
+                )
+                st.rerun()
 
             if triggers["validation"]:
                 orc.advance_to_validation()
                 _activity("🚦", "Phase advance: Documents → Validation", kind="ok")
+
             if triggers["ariba"]:
                 orc.phase = "ARIBA"
                 _activity("🚦", "Phase advance: Validation → Ariba Submission", kind="ok")
                 _render_phase_bar()
-                with st.chat_message("assistant", avatar="⚡"):
-                    with st.status("Submitting to Ariba SLP…", expanded=True) as status:
-                        st.write("📦 Packaging validated vendor record…")
-                        run_ariba(_PANEL)
-                        st.write(f"✅ Registration complete — ref **{st.session_state.ariba_result['ariba_reference']}**")
-                        status.update(label="Ariba submission complete!", state="complete")
-
+                with chat_box:
+                    with st.chat_message("assistant", avatar="⚡"):
+                        with st.status("Submitting to Ariba SLP…", expanded=True) as status:
+                            st.write("📦 Packaging validated vendor record…")
+                            run_ariba(_PANEL)
+                            st.write(f"✅ Registration complete — ref **{st.session_state.ariba_result['ariba_reference']}**")
+                            status.update(label="Ariba submission complete!", state="complete")
                 ariba_ref = st.session_state.ariba_result["ariba_reference"]
                 pt = st.session_state.ariba_result.get("payment_terms_days", "–")
                 go_live = st.session_state.ariba_result.get("go_live_date", "–")
@@ -882,231 +1116,5 @@ with chat_col:
                 st.session_state.messages.append({"role": "assistant", "content": completion_msg})
                 orc.advance_to_complete()
                 _activity("🎉", "Onboarding complete!", kind="ok")
-                st.rerun()
 
-    # File uploader for current required doc
-    next_doc = None
-    if orc.phase == "PHASE_B":
-        next_doc = orc.get_next_required_doc()
-
-    if next_doc:
-        st.markdown(
-            f"<div style='font-size:0.8rem;color:#0F2067;margin-top:8px;'>"
-            f"<b>📎 Upload your {next_doc['name']}</b> "
-            f"<span style='color:#777;'>(or type a confirmation below — both work)</span></div>",
-            unsafe_allow_html=True,
-        )
-        uploaded = st.file_uploader(
-            label="Upload file",
-            type=None,
-            label_visibility="collapsed",
-            key=f"uploader_{st.session_state.upload_counter}_{next_doc['id']}",
-            help=next_doc.get("why", ""),
-        )
-        if uploaded is not None:
-            upload_key = f"{next_doc['id']}::{uploaded.name}::{uploaded.size}"
-            if upload_key not in st.session_state.processed_uploads:
-                st.session_state.processed_uploads.add(upload_key)
-                st.session_state.messages.append({
-                    "role": "user",
-                    "content": f"📎 *Uploaded:* `{uploaded.name}` for {next_doc['name']}",
-                })
-                with st.spinner(f"ARIA is reading `{uploaded.name}` and extracting the relevant information…"):
-                    extraction = _process_doc_upload(uploaded, next_doc)
-                card = _format_extraction_card(uploaded.name, next_doc["name"], extraction)
-                st.session_state.messages.append({"role": "assistant", "content": card})
-                orc.confirm_doc(next_doc["id"])
-                st.session_state.upload_counter += 1
-                if orc.all_docs_confirmed():
-                    # All docs uploaded — DON'T jump to validation yet; bank form is next.
-                    st.session_state.pending_auto_turn = (
-                        "(System: vendor has now provided all required documents. "
-                        "Briefly acknowledge that and tell them ONE last step remains: "
-                        "providing their bank account details for payment setup, "
-                        "via the form that has just appeared below the chat. "
-                        "Do NOT include any [TRIGGER_*] markers.)"
-                    )
-                else:
-                    nxt = orc.get_next_required_doc()
-                    if nxt:
-                        _activity("📋", f"Next document queued: {nxt['name']}")
-                    st.session_state.pending_auto_turn = (
-                        f"(System: vendor just successfully provided their {next_doc['name']}. "
-                        f"Thank them briefly and request the NEXT required document.)"
-                    )
-                st.rerun()
-
-    # ── Bank-details form (appears after all docs uploaded, before validation) ─
-    show_bank_form = (
-        orc.phase == "PHASE_B"
-        and orc.all_docs_confirmed()
-        and not st.session_state.bank_submitted
-    )
-    if show_bank_form:
-        st.markdown(
-            "<div style='font-size:0.85rem;color:#0F2067;margin-top:10px;'>"
-            "<b>🏦 One last step — your bank account details</b> "
-            "<span style='color:#777;'>(required by Centrica AP for setting up payments)</span></div>",
-            unsafe_allow_html=True,
-        )
-        with st.form("bank_form", clear_on_submit=False):
-            bcol1, bcol2 = st.columns(2)
-            with bcol1:
-                bank_holder = st.text_input("Account holder name *", placeholder="Exactly as on your bank statement")
-                bank_name = st.text_input("Bank name *", placeholder="e.g. Barclays Bank UK PLC")
-                sort_code = st.text_input("Sort code *", placeholder="12-34-56", max_chars=8)
-            with bcol2:
-                account_number = st.text_input("Account number *", placeholder="12345678", max_chars=10)
-                iban = st.text_input("IBAN (optional)", placeholder="GB29 NWBK 6016 1331 9268 19")
-                currency = st.selectbox("Currency *", ["GBP", "EUR", "USD"], index=0)
-            submitted = st.form_submit_button("✅ Confirm bank details", type="primary", use_container_width=True)
-
-        if submitted:
-            missing = [n for n, v in [
-                ("Account holder", bank_holder), ("Bank name", bank_name),
-                ("Sort code", sort_code), ("Account number", account_number),
-            ] if not v.strip()]
-            if missing:
-                st.error(f"Please complete: {', '.join(missing)}")
-            else:
-                masked_acc = "****" + account_number[-4:] if len(account_number) >= 4 else "****"
-                orc.update_vendor_info("bank", {
-                    "holder": bank_holder.strip(),
-                    "bank_name": bank_name.strip(),
-                    "sort_code": sort_code.strip(),
-                    "account_number": masked_acc,
-                    "iban": iban.strip(),
-                    "currency": currency,
-                })
-                # Raise a flag — if holder name differs from registered company name, yellow flag
-                company_lower = orc.vendor_info.get("company_name", "").lower()
-                holder_lower = bank_holder.lower().strip()
-                if company_lower and holder_lower and \
-                   holder_lower not in company_lower and company_lower not in holder_lower:
-                    _add_flag("yellow", "Bank Account Validation",
-                              f"Holder '{bank_holder}' has minor variation from registered entity '{orc.vendor_info.get('company_name')}' — flag for manual review")
-                else:
-                    _add_flag("green", "Bank Account Validation",
-                              f"Holder name matches registered entity")
-                _add_flag("green", "Sanctions Bank Match", f"Bank '{bank_name}' on approved counterparty list")
-
-                # Confirmation message in chat
-                st.session_state.messages.append({
-                    "role": "user",
-                    "content": (
-                        f"🏦 *Bank details submitted:* {bank_name} · "
-                        f"{bank_holder} · ****{account_number[-4:] if len(account_number) >= 4 else '****'} · "
-                        f"{currency}"
-                    ),
-                })
-                st.session_state.bank_submitted = True
-                orc.advance_to_validation()
-                st.session_state.pending_auto_turn = (
-                    "(System: vendor has now provided their bank details and all required documents. "
-                    "Please perform the final validation summary, mention exactly ONE minor flag "
-                    "(the bank account holder name has a minor variation from the registered entity name — "
-                    "flag it for manual review but recommend proceeding), then submit to Ariba. "
-                    "Include [TRIGGER_ARIBA] on its own line at the end.)"
-                )
-                st.rerun()
-
-    if orc.phase != "COMPLETE":
-        user_input = st.chat_input("Type your message…")
-    else:
-        user_input = None
-        st.success("✅ Onboarding complete! Refresh the page to onboard another vendor.")
-
-    if user_input:
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        _extract_vendor_info(user_input, role="user")
-        if orc.phase in ("WELCOME", "PHASE_A"):
-            _detect_industry_from_messages()
-
-        # ── Pre-qual Ariba lookup branch ────────────────────────────────────
-        # After the first vendor message that lets us classify the industry,
-        # skip the Phase A questions and pull the existing pre-qual record
-        # from Ariba, then immediately run background checks.
-        if (
-            orc.vendor_info.get("industry")
-            and not st.session_state.prequal_done
-            and orc.vendor_info.get("company_name")
-        ):
-            with chat_box:
-                with st.chat_message("user", avatar="🏢"):
-                    st.markdown(user_input)
-            run_prequal_lookup(chat_box)
-            run_agents(_PANEL)
-            st.session_state.pending_auto_turn = (
-                "(System: all background checks have just completed successfully. "
-                "Briefly summarise the positive results in one short paragraph "
-                "and ask the vendor for the FIRST required industry-specific document. "
-                "Do NOT include any [TRIGGER_*] markers.)"
-            )
             st.rerun()
-
-        # ── Normal Gemini response path ──────────────────────────────────────
-        with chat_box:
-            with st.chat_message("user", avatar="🏢"):
-                st.markdown(user_input)
-            with st.chat_message("assistant", avatar="⚡"):
-                full = _stream_into_chat()
-
-        clean, triggers = _process_response_triggers(full)
-
-        if orc.phase == "PHASE_B" and next_doc:
-            positive = ["yes", "confirm", "have it", "here", "provided", "attached", "sent", "done", "sure", "ok", "✓", "ref"]
-            if any(w in user_input.lower() for w in positive):
-                orc.confirm_doc(next_doc["id"])
-                if orc.all_docs_confirmed():
-                    # Don't advance to validation — bank form is next
-                    st.session_state.pending_auto_turn = (
-                        "(System: vendor has now provided all required documents. "
-                        "Briefly acknowledge and tell them ONE last step remains: "
-                        "the bank-details form that has appeared below the chat. "
-                        "Do NOT include any [TRIGGER_*] markers.)"
-                    )
-
-        st.session_state.messages.append({"role": "assistant", "content": clean})
-
-        if triggers["agents"] and not st.session_state.agents_triggered:
-            orc.phase = "AGENTS_RUNNING"
-            run_agents(_PANEL)
-            st.session_state.pending_auto_turn = (
-                "(System: all background checks have just completed successfully. "
-                "Now briefly summarise the positive results in one short paragraph "
-                "and ask the vendor for the FIRST required industry-specific document.)"
-            )
-            st.rerun()
-
-        if triggers["validation"]:
-            orc.advance_to_validation()
-            _activity("🚦", "Phase advance: Documents → Validation", kind="ok")
-
-        if triggers["ariba"]:
-            orc.phase = "ARIBA"
-            _activity("🚦", "Phase advance: Validation → Ariba Submission", kind="ok")
-            _render_phase_bar()
-            with chat_box:
-                with st.chat_message("assistant", avatar="⚡"):
-                    with st.status("Submitting to Ariba SLP…", expanded=True) as status:
-                        st.write("📦 Packaging validated vendor record…")
-                        run_ariba(_PANEL)
-                        st.write(f"✅ Registration complete — ref **{st.session_state.ariba_result['ariba_reference']}**")
-                        status.update(label="Ariba submission complete!", state="complete")
-            ariba_ref = st.session_state.ariba_result["ariba_reference"]
-            pt = st.session_state.ariba_result.get("payment_terms_days", "–")
-            go_live = st.session_state.ariba_result.get("go_live_date", "–")
-            completion_msg = (
-                f"🎉 **Congratulations — registration is complete!**\n\n"
-                f"Your vendor record has been submitted to **Centrica's Ariba SLP**.\n\n"
-                f"- **Reference:** `{ariba_ref}`\n"
-                f"- **Payment terms:** {pt} days from invoice date\n"
-                f"- **Go-live date:** {go_live}\n\n"
-                f"A **DocuSign onboarding pack** has been sent for your signature.\n\n"
-                f"Is there anything else you'd like to know?"
-            )
-            st.session_state.messages.append({"role": "assistant", "content": completion_msg})
-            orc.advance_to_complete()
-            _activity("🎉", "Onboarding complete!", kind="ok")
-
-        st.rerun()
