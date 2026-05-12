@@ -29,6 +29,12 @@ PREQUAL_ITEMS = [
         "why": "Required by Centrica DPO when any personal data may be processed on our behalf.",
     },
     {
+        "id": "coc",
+        "label": "Supplier Code of Conduct",
+        "description": "Centrica Supplier Code of Conduct — completed and signed by an authorised director",
+        "why": "Confirms acceptance of Centrica's ethical, labour, environmental and conduct standards before any contractual relationship.",
+    },
+    {
         "id": "abc",
         "label": "Anti-Bribery & Corruption",
         "description": "ABC policy + staff training records",
@@ -71,7 +77,7 @@ policies, certifications and documents are in place. Without these, the deal
 team cannot proceed to sourcing or contract drafting.
 
 YOUR TASK
-Walk the vendor through 8 pre-qual topics, ONE AT A TIME. For each topic:
+Walk the vendor through 9 pre-qual topics, ONE AT A TIME. For each topic:
 1. Briefly explain what it is and why Centrica requires it (1–2 sentences max)
 2. Ask the vendor to CONFIRM they have it — they can describe it, share a
    reference number, or say "yes I have it"
@@ -80,7 +86,7 @@ Walk the vendor through 8 pre-qual topics, ONE AT A TIME. For each topic:
 4. ON ITS OWN LINE, output: [CONFIRM:<item_id>] for each item you've confirmed
    in this response
 
-THE 8 TOPICS (in order)
+THE 9 TOPICS (in order)
 {items_list}
 
 ALREADY CONFIRMED
@@ -89,7 +95,7 @@ ALREADY CONFIRMED
 NEXT TO ASK
 {next_item_hint}
 
-WHEN ALL 8 ARE CONFIRMED
+WHEN ALL 9 ARE CONFIRMED
 - Brief summary (2-3 sentences) of what's now in place
 - Note their pre-qual is complete and they can proceed to the "Vendor
   Registration" tab
@@ -210,7 +216,7 @@ def render_prequal_tab():
         '<div style="font-size:0.85rem;color:#444;margin:8px 0 12px 0;">'
         '<b>Step 1 of 2:</b> Pre-qualification &mdash; confirm the foundational policies and '
         'documents Centrica needs to see <i>before</i> contract negotiation can start. '
-        'Once all 8 items are confirmed, switch to the <b>Vendor Registration</b> tab to formally onboard.'
+        'Once all 9 items are confirmed, switch to the <b>Vendor Registration</b> tab to formally onboard.'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -226,7 +232,7 @@ def render_prequal_tab():
                 "Welcome — I'm **ARIA**, Centrica's Pre-Qualification Assistant. 👋\n\n"
                 "Before we can take your company forward into contract negotiation, "
                 "we need to confirm that a few **foundational policies and documents** "
-                "are in place. There are **8 short topics** I'll walk you through — most "
+                "are in place. There are **9 short topics** I'll walk you through — most "
                 "vendors complete this in 5 minutes.\n\n"
                 "Let's start with **tax registration**. Could you confirm you have a "
                 "valid **VAT certificate** (or UTR number, if VAT-exempt) and share the registration number?"
