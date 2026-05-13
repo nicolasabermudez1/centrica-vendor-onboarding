@@ -79,10 +79,11 @@ team cannot proceed to sourcing or contract drafting.
 YOUR TASK
 Walk the vendor through 9 pre-qual topics, ONE AT A TIME. For each topic:
 1. Briefly explain what it is and why Centrica requires it (1–2 sentences max)
-2. Ask the vendor to CONFIRM they have it — they can describe it, share a
-   reference number, or say "yes I have it"
-3. When confirmed, acknowledge warmly (1 sentence) and move to the NEXT
-   unconfirmed topic
+2. Tell the vendor they can either (a) confirm in chat with a reference number,
+   or (b) download the blank Centrica template using the button below the chat,
+   complete and sign it, then upload it — the upload widget is right next to it.
+3. When confirmed (chat or upload), acknowledge warmly (1 sentence) and move to
+   the NEXT unconfirmed topic
 4. ON ITS OWN LINE, output: [CONFIRM:<item_id>] for each item you've confirmed
    in this response
 
@@ -120,6 +121,12 @@ def _init_state():
         st.session_state.pq_complete = False
     if "pq_greeting_sent" not in st.session_state:
         st.session_state.pq_greeting_sent = False
+    if "pq_processed_uploads" not in st.session_state:
+        st.session_state.pq_processed_uploads = set()
+    if "pq_upload_counter" not in st.session_state:
+        st.session_state.pq_upload_counter = 0
+    if "pq_pending_auto_turn" not in st.session_state:
+        st.session_state.pq_pending_auto_turn = None
 
 
 def _get_next_item():
@@ -234,6 +241,9 @@ def render_prequal_tab():
                 "we need to confirm that a few **foundational policies and documents** "
                 "are in place. There are **9 short topics** I'll walk you through — most "
                 "vendors complete this in 5 minutes.\n\n"
+                "For each topic, you can either **confirm in chat** with a reference number, "
+                "or **download a blank Centrica template** (button appears below the chat), "
+                "complete & sign it, then upload it back — whichever is easier.\n\n"
                 "Let's start with **tax registration**. Could you confirm you have a "
                 "valid **VAT certificate** (or UTR number, if VAT-exempt) and share the registration number?"
             )
@@ -246,6 +256,141 @@ def render_prequal_tab():
                 avatar = "⚡" if msg["role"] == "assistant" else "🏢"
                 with st.chat_message(msg["role"], avatar=avatar):
                     st.markdown(msg["content"])
+
+            # Pending auto-turn (after a doc upload) — stream Gemini's next message inline
+            if st.session_state.pq_pending_auto_turn:
+                from utils.gemini_client import stream_chat
+                synthetic = st.session_state.pq_pending_auto_turn
+                st.session_state.pq_pending_auto_turn = None
+                messages_for_api = list(st.session_state.pq_messages) + [
+                    {"role": "user", "content": synthetic}
+                ]
+                with st.chat_message("assistant", avatar="⚡"):
+                    placeholder = st.empty()
+                    full = ""
+                    try:
+                        for chunk in stream_chat(messages_for_api, _get_system_prompt()):
+                            full += chunk
+                            placeholder.markdown(full + "▌")
+                        placeholder.markdown(full)
+                    except Exception as e:
+                        full = f"Sorry — a brief technical issue. ({str(e)[:80]})"
+                        placeholder.markdown(full)
+
+                # Parse markers
+                valid_ids = {it["id"] for it in PREQUAL_ITEMS}
+                for item_id in re.findall(r'\[CONFIRM:(\w+)\]', full):
+                    if item_id in valid_ids:
+                        st.session_state.pq_done_items.add(item_id)
+                if "[PREQUAL_COMPLETE]" in full:
+                    st.session_state.pq_complete = True
+                    for it in PREQUAL_ITEMS:
+                        st.session_state.pq_done_items.add(it["id"])
+
+                clean = re.sub(r'\[CONFIRM:\w+\]\s*', '', full)
+                clean = clean.replace('[PREQUAL_COMPLETE]', '').strip()
+                st.session_state.pq_messages.append({"role": "assistant", "content": clean})
+
+        # ── Document intake for current pending item ───────────────────────
+        next_item = _get_next_item()
+        if next_item and not st.session_state.pq_complete:
+            from utils.blank_pdf import generate_blank_form
+            st.markdown(
+                f"<div style='font-size:0.8rem;color:#0F2067;margin-top:10px;padding:6px 0;'>"
+                f"<b>📄 Current item:</b> {next_item['label']} &nbsp;|&nbsp; "
+                f"<span style='color:#777;'>"
+                f"Don't have one? Download the blank template, complete &amp; sign it, then re-upload."
+                f"</span></div>",
+                unsafe_allow_html=True,
+            )
+            dl_col, up_col = st.columns([1, 2])
+            with dl_col:
+                pdf_bytes = generate_blank_form(
+                    form_name=f"{next_item['label']} – Blank Form",
+                    description=next_item.get("description", ""),
+                    reference=f"PQ-{next_item['id'].upper()}-2026",
+                )
+                st.download_button(
+                    f"📄 Blank {next_item['label']}",
+                    data=pdf_bytes,
+                    file_name=f"centrica_prequal_{next_item['id']}_blank.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"pq_dl_{next_item['id']}",
+                )
+            with up_col:
+                uploaded = st.file_uploader(
+                    f"📤 Upload completed & signed **{next_item['label']}**",
+                    type=None,
+                    label_visibility="visible",
+                    key=f"pq_upload_{st.session_state.pq_upload_counter}_{next_item['id']}",
+                    help=next_item.get("why", ""),
+                )
+                if uploaded is not None:
+                    upload_key = f"{next_item['id']}::{uploaded.name}::{uploaded.size}"
+                    if upload_key not in st.session_state.pq_processed_uploads:
+                        st.session_state.pq_processed_uploads.add(upload_key)
+                        from utils.doc_reader import extract_text
+                        from utils.gemini_client import extract_doc_fields
+
+                        st.session_state.pq_messages.append({
+                            "role": "user",
+                            "content": (
+                                f"📎 *Uploaded:* `{uploaded.name}` &mdash; "
+                                f"completed **{next_item['label']}**"
+                            ),
+                        })
+
+                        with st.spinner(
+                            f"ARIA is reviewing `{uploaded.name}` against Centrica's "
+                            f"{next_item['label']} requirements…"
+                        ):
+                            text = extract_text(uploaded)
+                            extraction = extract_doc_fields(
+                                file_text=text,
+                                doc_name=next_item["label"],
+                                doc_purpose=next_item.get("why", ""),
+                                vendor_info={
+                                    "company_name": "Vendor",
+                                    "industry": "general",
+                                },
+                            )
+
+                        fields = extraction.get("extracted_fields", [])
+                        fields_md = "\n".join(
+                            f"- **{f.get('label','')}**: {f.get('value','')}" for f in fields
+                        )
+                        card = (
+                            f"📎 **Received `{uploaded.name}`** for *{next_item['label']}*\n\n"
+                            f"_Validated and key fields extracted — the file itself is not retained._\n\n"
+                            f"{fields_md}\n\n"
+                            f"✅ {extraction.get('summary', 'Document accepted.')}"
+                        )
+                        st.session_state.pq_messages.append({"role": "assistant", "content": card})
+
+                        # Mark item confirmed
+                        st.session_state.pq_done_items.add(next_item["id"])
+                        st.session_state.pq_upload_counter += 1
+
+                        # Queue ARIA's next prompt
+                        if all(it["id"] in st.session_state.pq_done_items for it in PREQUAL_ITEMS):
+                            st.session_state.pq_complete = True
+                            st.session_state.pq_pending_auto_turn = (
+                                "(System: vendor has now confirmed ALL 9 pre-qual items. "
+                                "Give a brief, warm summary congratulating them and tell them "
+                                "to switch to the Vendor Registration tab. "
+                                "End with [PREQUAL_COMPLETE] on its own line.)"
+                            )
+                        else:
+                            nxt = _get_next_item()
+                            st.session_state.pq_pending_auto_turn = (
+                                f"(System: vendor has just provided their {next_item['label']} "
+                                f"and ARIA has extracted the key fields. Briefly acknowledge "
+                                f"(one sentence) and ask for the NEXT topic: "
+                                f"{nxt['label'] if nxt else 'completion'}. "
+                                f"Output [CONFIRM:{next_item['id']}] on its own line.)"
+                            )
+                        st.rerun()
 
         if not st.session_state.pq_complete:
             user_input = st.chat_input("Type your message…", key="pq_chat_input")
